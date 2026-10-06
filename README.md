@@ -1,10 +1,11 @@
 # Data Structure Management Service
 
-Small REST API for managing metadata about data — **datasets** (business
-entities like Customer or Order) and the **data elements** (fields like
-`email`, `date_of_birth`) that belong to them.
+A small REST API for keeping track of metadata about data — not the actual
+records, but the structure around them. So you've got **datasets** (business
+entities, e.g. Customer or Order) and the **data elements** inside them (the
+fields, e.g. email, date_of_birth).
 
-Built with FastAPI + SQLModel + SQLite.
+Stack is FastAPI + SQLModel on SQLite.
 
 ## Running it
 
@@ -14,36 +15,30 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-Then:
-- http://localhost:8000/docs — Swagger UI, easiest way to try the endpoints
-- http://localhost:8000/openapi.json — the raw schema
+Easiest way to poke at it is the Swagger UI at http://localhost:8000/docs —
+you can hit every endpoint from there without touching curl.
 
-Tests:
+Run the tests with `pytest`.
 
-```bash
-pytest
-```
-
-Or with Docker:
+There's a Dockerfile too if you'd rather:
 
 ```bash
-docker build -t dsm . && docker run --rm -p 8000:8000 dsm
+docker build -t dsm .
+docker run --rm -p 8000:8000 dsm
 ```
 
 ## Endpoints
 
-| Method | Path | What it does |
-|--------|------|--------------|
-| POST | `/datasets` | create a dataset |
-| GET | `/datasets` | list datasets |
-| GET | `/datasets/{id}` | get a dataset + its elements |
-| POST | `/datasets/{id}/elements` | add an element to a dataset |
-| GET | `/datasets/{id}/elements` | list a dataset's elements (filterable) |
+- `POST /datasets` — create a dataset
+- `GET /datasets` — list them
+- `GET /datasets/{id}` — one dataset, with its elements included
+- `POST /datasets/{id}/elements` — add an element to a dataset
+- `GET /datasets/{id}/elements` — list a dataset's elements
 
-The list-elements endpoint takes optional filters: `?data_type=STRING`,
+That last one takes a few optional filters: `?data_type=STRING`,
 `?is_pii=true`, `?search=mail`.
 
-Quick example:
+Quick run-through:
 
 ```bash
 curl -X POST localhost:8000/datasets -H 'content-type: application/json' \
@@ -55,89 +50,86 @@ curl -X POST localhost:8000/datasets/1/elements -H 'content-type: application/js
 curl localhost:8000/datasets/1
 ```
 
-## Data model
+## The data model
 
-A Dataset has many DataElements (one-to-many). An element always belongs to
-one dataset and can't exist without it, so deleting a dataset deletes its
-elements.
+It's a one-to-many setup. A dataset has many data elements, and an element
+belongs to exactly one dataset — it doesn't really mean anything on its own, so
+if you delete a dataset its elements go with it.
 
 ```
-Dataset (id, name[unique], description, created_at, updated_at)
-   |
-   | 1-to-many  (FK dataset_id, ON DELETE CASCADE)
-   v
+Dataset (id, name, description, created_at, updated_at)
+  |
+  |  many
+  v
 DataElement (id, dataset_id, name, data_type, description,
              is_required, is_pii, created_at)
-             unique(dataset_id, name)
 ```
 
-A few decisions worth calling out:
+Some choices I made and why:
 
-**Element names are unique per dataset, not globally.** That's the
-`unique(dataset_id, name)` constraint. So `Customer` can't define `email`
-twice, but `Customer.email` and `Supplier.email` are allowed — they're
-genuinely different fields. This felt like the most important rule to get
-right, so it's enforced in the DB and there's a test for it.
+**Element names are unique within a dataset, not across the whole thing.** This
+was the rule I spent the most time on. You can't define `email` twice on
+Customer, but Customer and Supplier can both have an `email` — they're
+different fields that might even have different types. It's a composite unique
+constraint on (dataset_id, name), and there's a test for it.
 
-**Constraints are in the database, not just the API.** Uniqueness, the foreign
-key, NOT NULL — all on the tables. The API checks the same things first to
-give nicer error messages (409 instead of a 500), but the DB is the real
-guarantee. API checks can be skipped by a bug or lost to a race between two
-requests; the DB constraint can't.
+**I put the real constraints in the database**, not just in the API code. The
+API does check first, mostly so you get a readable 409 instead of an ugly 500,
+but the database is what actually guarantees things. A validation check in code
+can be skipped by a bug, or two requests can race past it at the same time — a
+DB constraint can't be fooled that way.
 
-> One SQLite gotcha: it ignores foreign keys unless you run
-> `PRAGMA foreign_keys=ON` on each connection. Without that the cascade does
-> nothing. That's handled in `app/database.py`.
+Side note that bit me: SQLite doesn't enforce foreign keys unless you turn them
+on per connection (`PRAGMA foreign_keys=ON`). Without it the cascade delete just
+quietly doesn't happen. It's set in `app/database.py`.
 
-**data_type is an enum**, not a free-text string: `STRING`, `INTEGER`,
-`FLOAT`, `BOOLEAN`, `DATE`, `DATETIME`. Keeps stored values consistent and
-shows up as a dropdown of valid values in the Swagger docs. Downside is that
-adding a type is a code change, but the set is small and stable so that's fine.
+**data_type is an enum** — STRING, INTEGER, FLOAT, BOOLEAN, DATE, DATETIME —
+rather than a plain string. Keeps the values consistent and you get a proper
+dropdown in the Swagger docs. The cost is that adding a new type means a code
+change, but the list is short and doesn't change much, so I was fine with that.
 
-**Validation is split in two.** Pydantic handles the shape of the request
-(required fields, lengths, valid enum value, no blank names) and rejects bad
-input with a 422 before it hits the DB. The database handles integrity
-(uniqueness, FK). The request/response schemas in `schemas.py` are kept
-separate from the table models in `models.py` so clients can't set fields like
-`id` or `created_at`.
+**Validation sits in two spots.** Pydantic (in `schemas.py`) checks the request
+itself — required fields, lengths, a real enum value, names that aren't just
+blank — and bounces bad input with a 422 before it reaches the DB. The database
+handles the integrity side (uniqueness, foreign keys). I kept the request/
+response schemas separate from the table models so a client can't go setting
+`id` or `created_at` itself.
 
-## Optional extras I included
+## Extras
 
-- `is_pii` flag on elements, plus a filter to list only PII fields
-- filtering/search on the elements list (by type, PII, name)
-- Swagger/OpenAPI (free with FastAPI)
-- Dockerfile
+Beyond the core requirements I added the PII flag (`is_pii`) with a filter to
+list just the PII fields, the search/filter on the elements list, the Docker
+setup, and Swagger comes for free with FastAPI.
 
-## Assumptions / trade-offs
+## Assumptions & trade-offs
 
-- SQLite + `create_all` on startup to keep it simple. Real app → Postgres +
-  Alembic migrations.
-- Only create/list/retrieve + add/list elements, since that's what was asked.
-  No update/delete endpoints yet (the cascade is already set up for delete
-  though).
-- No auth or pagination — out of scope here, but pagination is the first thing
-  I'd add before any real data volume.
-- This service stores *metadata* about fields, so it doesn't validate real
-  record values against those types — there are no records yet. That belongs
-  in whatever service stores the actual data.
+- SQLite with `create_all` on startup to keep things simple. For anything real
+  I'd use Postgres and Alembic migrations.
+- Only built create / list / retrieve plus add / list elements, since that's
+  what the brief asked for. No update or delete endpoints yet — though the
+  cascade's already wired up for when delete gets added.
+- No auth, no pagination. Pagination is the first thing I'd add before real data
+  volumes, auth would depend on how this fits into the wider system.
+- Since this only stores *metadata* about fields, it doesn't try to validate
+  real values against those types — there aren't any records here. That check
+  belongs wherever the actual data lives.
 
-## If I had more time
+## Stuff I'd do next
 
-- PATCH/DELETE for datasets and elements
-- pagination + sorting on the list endpoints
-- retention/lifecycle fields (the model takes extra columns cleanly)
-- swap create_all for Alembic
+PATCH/DELETE endpoints, pagination + sorting on the lists, swap create_all for
+real migrations, and probably some retention/lifecycle metadata — the model
+takes extra columns without much fuss.
 
 ## Layout
 
 ```
 app/
   main.py         app + startup
-  database.py     engine, session, the SQLite FK pragma
-  models.py       tables + constraints (the data model)
-  schemas.py      request/response models (validation)
+  database.py     engine, session, the sqlite FK pragma
+  models.py       tables + constraints
+  schemas.py      request/response models
   routers/
-    datasets.py   all the endpoints
+    datasets.py   the endpoints
 tests/
   conftest.py     in-memory db fixture
   test_api.py
