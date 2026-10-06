@@ -1,0 +1,13 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # keep the sqlite file on a volume so data survives restarts
+      - DATABASE_URL=sqlite:////data/app.db
+    volumes:
+      - app-data:/data
+
+volumes:
+  app-data:

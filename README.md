@@ -27,6 +27,9 @@ docker build -t dsm .
 docker run --rm -p 8000:8000 dsm
 ```
 
+Or just `docker compose up --build` — that keeps the sqlite file on a volume so
+your data sticks around between restarts.
+
 ## Endpoints
 
 - `POST /datasets` — create a dataset
